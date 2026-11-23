@@ -1,202 +1,54 @@
-# Cologne Major 2026 — Pick'em Simulator
+# PGL Major Singapore 2026 Pick’Em simulator
 
-[中文版](README_zh.md)
+[中文版](README_zh.md) · [Stage 1 picks and probabilities (Chinese)](STAGE1_PICKEM_zh.md)
 
-CS2 Major Swiss stage simulator for finding optimal Pick'em selections.
-Uses an Elo/ratio hybrid win-probability model with Monte Carlo simulation.
+Simulate a 16-team Swiss stage and find cards with a high modelled chance of getting at least five of the ten Pick’Em slots right.
 
-## Quick Start
+## Run
+
+From the repository root, use Python 3.10 or later. Only the standard library is required.
 
 ```bash
-cd /Users/sunxt/projects/cologne-pickem
 python3 main.py --stage 1
-python3 main.py --stage 2
-python3 main.py --stage 3
+python3 main.py --stage 1 --sims 50000 --pick-sims 100000 --candidates 4000 --seed 20261124
+python3 main.py --stage 2 --no-advancers
+python3 win_probability.py
+python3 -m unittest discover -v
 ```
 
-## CLI Options
+| Option | Meaning |
+| --- | --- |
+| `--stage {1,2,3}` | Swiss stage to simulate |
+| `--sims N` | Search tournaments for team probabilities and card selection (default 5,000) |
+| `--pick-sims N` | Fresh tournaments for evaluating the three finalists (default 3,000) |
+| `--candidates N` | Maximum cards to compare on the search tournaments (default 4,000) |
+| `--seed N` | Reproducible random stream for the whole run (default 42) |
+| `--no-advancers` | Draw all feeder stages from scratch, including those with configured results |
 
-```
---stage {1,2,3}        Which Swiss stage to simulate (required)
---sims N               Monte Carlo trials for team probabilities
---pick-sims N          Trials per Pick'em candidate
---candidates N         Max Pick'em combinations to test
---no-advancers         Ignore preset S1 results; simulate prior stages from scratch
---seed N               Random seed for reproducibility (default: 42)
-```
+## Data and configuration
 
-Examples:
-```bash
-python3 main.py --stage 2 --sims 10000 --pick-sims 5000
-python3 main.py --stage 3 --no-advancers
-```
+`config.py` contains the 32 teams, fixed event seeds, pre-match rating inputs, model parameters and an optional card filter. PGL set the initial seed order using the November 2 VRS. The strength model uses the November 16 HLTV world ranking and November 23 live VRS. Event names include PVISION (PARIVISION) and GOSH (BC.Game). [PGL stage schedule](https://www.pglesports.com/cs2/pgl-major-singapore-2026/) · [HLTV world ranking](https://www.hltv.org/ranking/teams/2026/november/16) · [Live VRS](https://www.hltv.org/valve-ranking/teams/2026/november/23)
 
-## File Structure
+The first eight entries of `STAGE2` and `STAGE3` are direct invites. When the preceding stage ends, enter all eight qualifiers in final seed order in slots 9–16. Until then the CLI draws the missing field once per run, prints it, and evaluates cards conditional on that field.
 
-```
-cologne-pickem/
-├── config.py              # All configurable data and parameters
-├── win_probability.py     # Elo/ratio win probability model
-├── swiss_simulator.py     # Swiss tournament simulation engine
-├── main.py                # CLI entry point + Pick'em optimizer
-└── README.md
-```
+`rank_bias` adjusts perceived playing strength in ranking places. Positive values strengthen a team. The initial seed and official matchups stay fixed. The Singapore values and their source are described in the [Stage 1 reference](STAGE1_PICKEM_zh.md). Optional `HEAD_TO_HEAD` values represent a team's map win share against a particular opponent. The Singapore snapshot leaves these empty. To restrict picks, assign your own `pickem_filter(picks, teams)` function in the configuration.
 
-## Configuration
+## Draw and scoring
 
-All tunable parameters are in `config.py`.
+The opening round pairs seeds 1–8 with seeds 9–16 in order. For each later round, teams are grouped by record and ranked by their opponents’ current net wins (Buchholz), then by initial seed. Rounds 2–3 match high against low with backtracking to avoid rematches. Rounds 4–5 use Valve’s ordered six-team table. The final standings determine incoming seeds 9–16 for the next stage. [Valve Major rules](https://github.com/ValveSoftware/counter-strike_rules_and_regs/blob/main/major-supplemental-rulebook.md#swiss-bracket)
 
-### Team data (`TEAMS`)
+Three wins advance a team and three losses eliminate it. In Stages 1–2, advancement and elimination series are BO3 and the remaining series are BO1. Stage 3 uses BO3 throughout. [PGL event format](https://www.pglesports.com/cs2/pgl-major-singapore-2026/)
 
-```python
-"vita": {
-    "name": "Team Vitality",
-    "vrs": 1,              # VRS rank (Valve Regional Standings)
-    "hltv_rank": 1,        # HLTV world ranking position
-    "hltv_pts": 1000,      # HLTV ranking points
-    "form": 0.95,          # recent form [0-1] (unused in Elo model)
-    "rank_bias": 0,        # optional strength adjustment
-},
-```
+| Slot | Picks | Each scores one point for |
+| --- | ---: | --- |
+| 3–0 | 2 | Advancing undefeated |
+| 3–1 / 3–2 | 6 | Advancing with one or two losses |
+| 0–3 | 2 | Elimination without a win |
 
-### Stage seedings (`STAGE1`, `STAGE2`, `STAGE3`)
+Each team can occupy one slot. Five correct picks complete the stage challenge. [Singapore Pick’Em card](https://blast.tv/major/pickems)
 
-Each stage is a list of 16 team codes in seed order. Reorder codes to change seeding.
+## Win probabilities and card search
 
-```python
-STAGE2 = [
-    "fut", "spir", "astr", "g2", "lega", "pain", "monte", "9z",   # seeds 1-8
-    "b8", "betb", "gl", "m80", "mibr", "tylo", "big", "fly",      # seeds 9-16
-]
-```
+`win_probability.py` blends an HLTV points ratio with an Elo-style probability from the VRS points difference. The default weights are 0.837 and 0.163 respectively. The BO1 adjustment shrinks the single-map edge by 20%. BO3 increases the per-map edge by 10% and converts the adjusted map probability `p` to a series probability `3p² − 2p³`. The model treats a team's map probability as constant within a series and does not simulate vetoes.
 
-### rank_bias
-
-Adjust a team's perceived strength relative to their HLTV/VRS ranking.
-Shifts effective rank, then recalculates Elo ratings from the adjusted rank.
-
-```python
-"tylo": {..., "rank_bias": 5},     # treated as 5 ranks better
-"astr": {..., "rank_bias": -3},    # treated as 3 ranks worse
-```
-
-- `+N`: effective rank = actual rank - N (team is stronger than data shows)
-- `-N`: effective rank = actual rank + N (team is weaker than data shows)
-- Default `0`: no adjustment
-
-### Model parameters (`MODEL`)
-
-```python
-MODEL = {
-    # Elo / Ratio weights
-    "sigma_vrs": 89.0,       # Elo sigma for VRS component
-    "hltv_exp": 0.432,       # exponent for HLTV ratio component
-    "w_hltv": 0.837,         # HLTV weight (dominant)
-    "w_vrs": 0.163,          # VRS weight
-
-    # Upset factors
-    #   upset > 0  -> pulls toward 50% (more randomness)
-    #   upset = 0  -> no change
-    #   upset < 0  -> pushes away from 50% (amplifies favorite)
-    "upset_bo1": 0.20,       # BO1: high variance, single-map randomness
-    "upset_bo3": -0.10,      # BO3: multi-map amplifies skill gap
-
-    # H2H adjustment
-    "h2h_weight": 0.12,      # max ±6% for extreme head-to-head records
-}
-```
-
-### Simulation defaults (`SIM`)
-
-```python
-SIM = {
-    "team_sims": 5000,       # trials for team probability estimation
-    "pick_sims": 3000,       # trials per Pick'em candidate evaluation
-    "candidates": 4000,      # max Pick'em combinations to test
-}
-```
-
-## Win Probability Model
-
-Two-component Elo/ratio hybrid:
-
-```
-VRS ratings estimated from rank:  1880 - (rank - 1) * 10.5
-HLTV ratings estimated from points:  3 + pts * 0.177
-
-p_vrs  = 1 / (1 + 10^((vrs_B - vrs_A) / sigma_vrs))
-p_hltv = 1 / (1 + (hltv_B / hltv_A) ^ hltv_exp)
-p_base = w_hltv * p_hltv + w_vrs * p_vrs
-
-Upset adjustment:
-p_map  = 0.5 + (p_base - 0.5) * (1 - upset_factor)
-
-BO1:  uses upset_bo1 (e.g. 0.20 -> 80% becomes 74%)
-BO3:  applies upset_bo3 per-map (e.g. -0.10 -> 80% becomes 83%),
-      then computes binomial: P(2-0) + P(2-1)
-```
-
-## Swiss Pairing Algorithm
-
-Follows the CS Major 2026 official rulebook (verified against [majors.im](https://majors.im/2026/cologne) source code):
-
-1. **Inverted seed sort** (Round 0): seeds 1-8 rank normally; seeds 9-16 are inverted so the strongest bottom-half team pairs with the strongest top-half team
-2. **DFS from end**: within each W-L pool, the first team pairs with the last eligible team from the end of the sorted list, avoiding rematches
-3. **Buchholz tiebreaker**: after Round 0, teams are sorted by losses (asc), wins (desc), Buchholz (desc), then seed
-4. **BO3 for elimination/advancement matches**: when a team is at 2 wins or 2 losses
-
-## Pick'em Scoring
-
-10 picks per stage, max 10 points:
-
-| Category | Slots | Scores if |
-|----------|:-----:|-----------|
-| exact30  | 2 | team goes exactly 3-0 |
-| advancers | 6 | team goes 3-1 or 3-2 |
-| exact03  | 2 | team goes exactly 0-3 |
-
-Pass threshold: >= 5 correct picks (>=5 pts).
-
-## Output
-
-The simulation prints:
-- Team pool with strength scores and rank_bias indicators
-- Round 0 matchups for pairing verification
-- **Top 3** Pick'em combinations, each with:
-  - Pass rates (>=5pts, >=4pts) and expected points
-  - Exact 3-0 / Advancers / Exact 0-3 picks with per-team probabilities
-- Point distribution chart from the best combination
-- Full team projections (advance / 3-0 / 0-3 rates)
-
-## Pick'em Filter
-
-The `pickem_filter` function at the bottom of `config.py` lets you reject invalid Pick'em
-combinations before they are evaluated:
-
-```python
-def pickem_filter(picks, teams):
-    """
-    picks = {"exact30": [...], "advancers": [...], "exact03": [...]}
-    Return True to keep, False to skip.
-    """
-
-    # Example: don't put TYLOO or FlyQuest in 0-3
-    if "tylo" in picks["exact03"] or "fly" in picks["exact03"]:
-        return False
-
-    # Example: don't put Brazilian teams in 3-0
-    # br_teams = {"furi", "mibr", "pain", "lega", "9z"}
-    # for code in picks["exact30"]:
-    #     if code in br_teams:
-    #         return False
-
-    return True
-```
-
-Filtered combinations are reported in the output (e.g. `(42 combination(s) rejected by pickem_filter)`).
-
-## Data Sources
-
-- HLTV rankings from [5EPlay](https://csgo.5eplay.com) weekly reports (June 2, 2026)
-- VRS rankings from official Major seeding
-- Tournament results from HLTV / Liquipedia / esports news
+`swiss_simulator.py` draws all 33 series of each tournament. `main.py` considers pairs from each exact slot’s five highest-probability teams and six ordinary advancers from the next nine eligible teams ranked by 3–1 / 3–2 probability. It screens by expected points and compares the retained cards on the same tournaments, preserving the dependencies created by Swiss pairings. The three finalists are ordered by search-sample five-point pass rate, with expected points breaking ties. The displayed pass rates, expected points, score distribution and individual team rates come from held-out tournaments. This is a bounded search and its estimates depend on the strength model.

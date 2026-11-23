@@ -1,215 +1,54 @@
-# 科隆 Major 2026 — Pick'em 模拟器
+# PGL 新加坡 Major 2026 Pick’Em 模拟器
 
-[English](README.md)
+[English](README.md) · [第一阶段作业与概率](STAGE1_PICKEM_zh.md)
 
-基于 Elo/比值混合胜率模型的 CS2 Major 瑞士轮模拟器，使用蒙特卡洛方法寻找最优 Pick'em 选择。
+这个模拟器为 16 队瑞士轮挑选竞猜卡，目标是让十个位置至少猜对五个。每次试验都从首轮开始，上一场的胜负会改变下一场的对手。
 
-## 快速开始
+## 运行
+
+在仓库根目录使用 Python 3.10 或更新版本，仅需标准库。
 
 ```bash
-cd /Users/sunxt/projects/cologne-pickem
-python3 main.py --stage 1    # 第一阶段（揭幕战）
-python3 main.py --stage 2    # 第二阶段（淘汰赛）
-python3 main.py --stage 3    # 第三阶段（传奇组）
+python3 main.py --stage 1
+python3 main.py --stage 1 --sims 50000 --pick-sims 100000 --candidates 4000 --seed 20261124
+python3 main.py --stage 2 --no-advancers
+python3 win_probability.py
+python3 -m unittest discover -v
 ```
 
-## 命令行参数
+| 参数 | 用途 |
+| --- | --- |
+| `--stage {1,2,3}` | 指定瑞士轮阶段 |
+| `--sims N` | 搜索用的模拟届数，默认 5,000 |
+| `--pick-sims N` | 独立评估前三套作业的模拟届数，默认 3,000 |
+| `--candidates N` | 参与整卡比较的组合数上限，默认 4,000 |
+| `--seed N` | 控制整次运行的随机种子，默认 42 |
+| `--no-advancers` | 从头模拟前置阶段，忽略已填写的晋级名单 |
 
-```
---stage {1,2,3}        选择模拟哪个阶段（必填）
---sims N               队伍概率估算的蒙特卡洛次数
---pick-sims N          每个 Pick'em 组合的估值次数
---candidates N         最多测试的 Pick'em 组合数
---no-advancers         忽略预设晋级结果，从更早阶段重新模拟
---seed N               随机种子，用于结果复现（默认 42）
-```
+## 数据与配置
 
-示例：
-```bash
-python3 main.py --stage 2 --sims 10000 --pick-sims 5000
-python3 main.py --stage 3 --no-advancers
-```
+`config.py` 保存 32 支队伍、赛事种子、赛前实力数据、模型参数和选队过滤器。初始种子使用赛事采用的 11 月 2 日 VRS 顺序，实力估计使用 11 月 16 日 HLTV 世界排名和 11 月 23 日实时 VRS。PVISION 对应 HLTV 的 PARIVISION，GOSH 对应 BC.Game。[PGL 赛程](https://www.pglesports.com/cs2/pgl-major-singapore-2026/) · [HLTV 世界排名](https://www.hltv.org/ranking/teams/2026/november/16) · [实时 VRS](https://www.hltv.org/valve-ranking/teams/2026/november/23)
 
-## 文件结构
+`STAGE2` 和 `STAGE3` 的前八位是直邀队。上一阶段结束后，把八支晋级队按最终名次填进第 9–16 位。名单待定时，每次运行会先模拟出一套参赛阵容，随后显示的概率均以这套阵容为条件。
 
-```
-cologne-pickem/
-├── config.py              # 所有可配置数据和参数
-├── win_probability.py     # Elo/比值混合胜率模型
-├── swiss_simulator.py     # 瑞士轮模拟引擎
-├── main.py                # CLI 入口 + Pick'em 优化器
-└── README.md / README_zh.md
-```
+意向分 `rank_bias` 按排名位数微调实力，正值表示看好，官方种子与首轮对手固定。新加坡使用的分值与依据见[一阶段参考](STAGE1_PICKEM_zh.md)。`HEAD_TO_HEAD` 可录入两队的地图交手胜率，本次快照留空。需要限制某些选择时，可在配置中指定自己的 `pickem_filter(picks, teams)`。
 
-## 配置文件
+## 配对与计分
 
-所有可调参数集中在 `config.py`。
+首轮由 1–8 号种子分别对阵 9–16 号种子。以后各轮在同战绩组内，以所有已交手对手当前的净胜场之和（Buchholz）排序，再用本阶段初始种子破同分。第 2、3 轮优先高种子打低种子，遇到会迫使剩余队伍重赛的组合时回溯。第 4、5 轮按 Valve 的六队配对表依次检索。下一阶段的晋级种子按上一阶段最终战绩、最终 Buchholz、原种子排序。[Valve Major 补充规则](https://github.com/ValveSoftware/counter-strike_rules_and_regs/blob/main/major-supplemental-rulebook.md#swiss-bracket)
 
-### 队伍数据 (`TEAMS`)
+三胜晋级，三负淘汰。第一、二阶段的晋级战和淘汰战打 BO3，其余打 BO1。第三阶段全部打 BO3。[PGL 赛制](https://www.pglesports.com/cs2/pgl-major-singapore-2026/)
 
-```python
-"vita": {
-    "name": "Team Vitality",
-    "vrs": 1,              # VRS 排名（Valve 地区排名）
-    "hltv_rank": 1,        # HLTV 世界排名
-    "hltv_pts": 1000,      # HLTV 积分
-    "form": 0.95,          # 近期状态 [0-1]（Elo 模型中未使用）
-    "rank_bias": 0,        # 可选：排名偏差
-},
-```
+| 栏位 | 队数 | 每队得 1 分的条件 |
+| --- | ---: | --- |
+| 3–0 | 2 | 全胜晋级 |
+| 3–1 / 3–2 | 6 | 恰好输一场或两场后晋级 |
+| 0–3 | 2 | 三连败出局 |
 
-### 阶段种子 (`STAGE1`, `STAGE2`, `STAGE3`)
+每支队伍只能填一个位置，十个位置命中五个即完成该阶段挑战。[新加坡 Pick’Em 卡面与任务](https://blast.tv/major/pickems)
 
-每个阶段是一个包含 16 个队伍代码的列表，列表索引即种子号。调换顺序即可改变种子排名。
+## 胜率与选卡方法
 
-```python
-STAGE2 = [
-    "fut", "spir", "astr", "g2", "lega", "pain", "monte", "9z",   # 种子 1-8
-    "b8", "betb", "gl", "m80", "mibr", "tylo", "big", "fly",      # 种子 9-16
-]
-```
+`win_probability.py` 将 HLTV 积分比值与 VRS 积分差折算为单图胜率，两项默认权重分别为 0.837 和 0.163。BO1 将基础胜率偏离 50% 的幅度收窄 20%。BO3 将单图优势放大 10%，再用 `3p² − 2p³` 将单图胜率换算为系列赛胜率。模型把同一系列赛各地图的胜率视为相同，未模拟地图 BP。
 
-- 第一阶段：16 支队伍，按 VRS 排种子 1-16
-- 第二阶段：种子 1-8（直通队）+ 种子 9-16（第一阶段晋级队）
-- 第三阶段：种子 1-8（直通队）+ 种子 9-16（第二阶段晋级队，待定）
-
-### rank_bias
-
-调整队伍的实际实力相对于 HLTV/VRS 排名的偏差。正值表示队伍比排名更强，负值表示更弱。会同时偏移 VRS 和 HLTV 的有效排名，然后重新估算 Elo 评分。
-
-```python
-"tylo": {..., "rank_bias": 5},     # 实际比排名强 5 名
-"astr": {..., "rank_bias": -3},    # 实际比排名弱 3 名
-```
-
-- `+N`：有效排名 = 实际排名 - N（更强）
-- `-N`：有效排名 = 实际排名 + N（更弱）
-- 默认 `0`：不调整
-
-### 模型参数 (`MODEL`)
-
-```python
-MODEL = {
-    # Elo / 比值权重
-    "sigma_vrs": 89.0,       # VRS 的 Elo sigma 值
-    "hltv_exp": 0.432,       # HLTV 比值指数
-    "w_hltv": 0.837,         # HLTV 权重（主导）
-    "w_vrs": 0.163,          # VRS 权重
-
-    # 爆冷系数
-    #   > 0  -> 胜率趋近 50%（随机性增大）
-    #   = 0  -> 不调整
-    #   < 0  -> 胜率远离 50%（放大强队优势）
-    "upset_bo1": 0.20,       # BO1：单图变数大，压缩强队优势
-    "upset_bo3": -0.10,      # BO3：多图放大实力差距
-
-    # 交手记录调整
-    "h2h_weight": 0.12,      # 极端交手记录最多 ±6% 调整
-}
-```
-
-### 模拟参数 (`SIM`)
-
-```python
-SIM = {
-    "team_sims": 5000,       # 队伍概率估算的模拟次数
-    "pick_sims": 3000,       # 每个 Pick'em 组合的估值次数
-    "candidates": 4000,      # 最多测试的 Pick'em 组合数
-}
-```
-
-## 胜率模型
-
-双组件 Elo/比值混合模型：
-
-```
-VRS 评分由排名估算：  1880 - (rank - 1) * 10.5
-HLTV 评分由积分估算：  3 + pts * 0.177
-
-p_vrs  = 1 / (1 + 10^((vrs_B - vrs_A) / sigma_vrs))
-p_hltv = 1 / (1 + (hltv_B / hltv_A) ^ hltv_exp)
-p_base = w_hltv * p_hltv + w_vrs * p_vrs
-
-爆冷修正：
-p_map  = 0.5 + (p_base - 0.5) * (1 - upset_factor)
-
-BO1：  使用 upset_bo1（例如 0.20 → 80% 变为 74%）
-BO3：  使用 upset_bo3 修正每图胜率后（例如 -0.10 → 80% 变为 83%），
-       再通过二项分布计算 BO3 总胜率：P(2-0) + P(2-1)
-```
-
-### 爆冷系数效果示例
-
-| upset | 效果 | p=80% 变为 |
-|:-----:|------|:---------:|
-| 0.35 | BO1 高随机性 | 69.5% |
-| 0 | 不调整 | 80% |
-| -0.10 | BO3 放大优势 | 83% → BO3 97.7% |
-| -1 | 大幅放大 | ~98% |
-| 1 | 完全硬币 | 50% |
-| 2 | 胜率倒转 | 20% |
-
-## 瑞士轮配对算法
-
-严格遵循 CS Major 2026 官方规则（对照 [majors.im](https://majors.im/2026/cologne) 源码验证）：
-
-1. **Inverted Seed 排序**（第 0 轮）：种子 1-8 正常排列；种子 9-16 取反（`1000 - seed`），使得下半区最强队与上半区最强队对阵
-2. **DFS 自末尾搜索**：每个 W-L 组内，第一支队从排序列表末尾开始寻找首个未交手队伍配对，避免重赛
-3. **Buchholz 破同分**：第 0 轮后按负场（升序）、胜场（降序）、Buchholz（降序）、种子号排序
-4. **淘汰/晋级战 BO3**：当队伍累积 2 胜或 2 负时改为 BO3
-
-## Pick'em 计分
-
-每阶段 10 个选择：
-
-| 类别 | 位置数 | 得分条件 |
-|------|:-----:|----------|
-| exact30 | 2 | 选择的队伍恰好 3-0 晋级 |
-| advancers | 6 | 选择的队伍以 3-1 或 3-2 晋级 |
-| exact03 | 2 | 选择的队伍恰好 0-3 淘汰 |
-
-通过线：>= 5 个正确选择。
-
-## 输出内容
-
-模拟完成后输出：
-
-- 队伍池及实力评分，标注 rank_bias 调整
-- 第 0 轮对阵表，用于验证配对逻辑
-- **前 3 名**最优 Pick'em 组合，各自包含：
-  - 通过率（>=5分 / >=4分）和期望得分
-  - exact30 / advancers / exact03 选择及各队概率
-- 最优组合的得分分布图
-- 全部队伍的晋级/3-0/0-3 概率预测
-
-## Pick'em 过滤器
-
-在 `config.py` 底部有一个 `pickem_filter` 函数，用于在评估前剔除不符合自定义规则的 Pick'em 组合：
-
-```python
-def pickem_filter(picks, teams):
-    """
-    picks = {"exact30": [...], "advancers": [...], "exact03": [...]}
-    返回 True 保留该组合，False 跳过。
-    """
-
-    # 示例：不让 TYLOO/FlyQuest 出现在 0-3
-    if "tylo" in picks["exact03"] or "fly" in picks["exact03"]:
-        return False
-
-    # 示例：不让巴西队出现在 3-0
-    # br_teams = {"furi", "mibr", "pain", "lega", "9z"}
-    # for code in picks["exact30"]:
-    #     if code in br_teams:
-    #         return False
-
-    return True
-```
-
-被过滤掉的组合数会在输出中报告（例如 `(42 combination(s) rejected by pickem_filter)`）。
-
-## 数据来源
-
-- HLTV 排名来自 [5EPlay](https://csgo.5eplay.com) 每周排名报道（2026 年 6 月 2 日）
-- VRS 排名来自官方 Major 种子分配
-- 赛事结果来自 HLTV / Liquipedia / 电竞新闻
+`swiss_simulator.py` 每届完整模拟 33 个系列赛。`main.py` 分别从 3–0 和 0–3 概率最高的五队中各选两队，再从剩余队伍里普通晋级概率最高的九队中选六队。程序按期望得分初筛，让保留的候选卡在同一批赛果上比较，以保留瑞士轮对手之间的相关性。前三套按搜索样本中达到五分的概率排序，同分时比较期望得分。显示的通过率、期望分、得分分布和各队命中率使用另一批独立模拟估算。搜索范围和模型假设都会影响结果。
